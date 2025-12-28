@@ -14,5 +14,6 @@ from agents.registry import AgentRegistry
 # Import agents to trigger auto-registration
 from agents import researcher
 from agents import strategist
+from agents import perplexity
 
 __all__ = ["BaseAgent", "AgentResult", "AgentRegistry"]

@@ -244,7 +244,7 @@ def callback():
     # Prepare form data
     data = {
         'code': code,
-        'redirect_uri': 'https://5b7331a75f8d.ngrok-free.app/callback',
+        'redirect_uri': 'https://a5f085fdd823.ngrok-free.app/callback',
         'client_id': client_id,
         'client_secret': client_secret,
         'grant_type': 'authorization_code'
