@@ -48,6 +48,9 @@ class AgentContext:
     # === External References ===
     urls: List[str] = field(default_factory=list)
     
+    # === Authentication (for file downloads) ===
+    access_token: Optional[str] = None  # OAuth token for authenticated requests
+    
     # === Execution Metadata ===
     user_id: str = ""
     created_at: datetime = field(default_factory=datetime.now)

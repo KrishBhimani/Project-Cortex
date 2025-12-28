@@ -537,6 +537,9 @@ def webhook():
                     # External References
                     urls=extracted_urls,
                     
+                    # Authentication
+                    access_token=access_token,
+                    
                     # Execution Metadata
                     user_id=app_user_id,
                     created_at=created_at,
