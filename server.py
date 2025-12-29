@@ -1,10 +1,9 @@
 import os
 import datetime
 import asyncio
-import threading
 import re
-from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, Response
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
 from agno.team import TeamRunEvent
 from agno.run.agent import RunEvent
 from dotenv import load_dotenv
@@ -13,30 +12,14 @@ import json
 from refresh_linear_tokens import schedule_daily_refresh
 from agent_context import AgentContext
 from agents import AgentRegistry
-# from linear_mcp import LinearMCP
-# from backendtest import XOBackend
 import psycopg2
 import psycopg2.extras
-app = Flask(__name__)
+
+app = FastAPI()
 
 # Load environment variables
 load_dotenv()
 
-# Thread pool for async operations
-executor = ThreadPoolExecutor(max_workers=5)
-
-def run_async_in_thread(async_func):
-    """Run async function in a separate thread with its own event loop"""
-    def wrapper():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(async_func())
-        finally:
-            loop.close()
-    
-    future = executor.submit(wrapper)
-    return future.result()
 
 def get_db_connection():
     """Get database connection"""
@@ -44,6 +27,7 @@ def get_db_connection():
     if not db_url:
         raise Exception("DB_URL environment variable is required")
     return psycopg2.connect(db_url)
+
 
 def create_agent_activity(access_token, agent_session_id, content):
     """Create agent activity using Linear GraphQL API"""
@@ -79,6 +63,7 @@ def create_agent_activity(access_token, agent_session_id, content):
     except Exception as e:
         print(f"Error creating agent activity: {e}")
         return None
+
 
 def update_issue_status(issue_id, state_id):
     """Update issue status using Linear GraphQL API"""
@@ -120,6 +105,7 @@ def update_issue_status(issue_id, state_id):
     except Exception as e:
         print(f"Error updating issue status: {e}")
         return None
+
 
 def save_oauth_data(viewer_id, viewer_name, access_token, refresh_token, expires_in):
     """Save OAuth data to linear_agents_tokens table"""
@@ -181,6 +167,7 @@ def save_oauth_data(viewer_id, viewer_name, access_token, refresh_token, expires
         print(f"Error saving OAuth data: {e}")
         return False
 
+
 def get_access_token_by_viewer_id(viewer_id):
     """Get access token from database by viewer_id"""
     try:
@@ -205,35 +192,30 @@ def get_access_token_by_viewer_id(viewer_id):
         print(f"Error getting access token: {e}")
         return None
 
-@app.route('/callback', methods=['GET'])
-def callback():
+
+@app.get('/callback')
+async def callback(code: str = None, state: str = None):
     """
     GET endpoint to handle callback with code and state query parameters
     """
     print("=== CALLBACK ENDPOINT CALLED ===")
     
-    # Extract query parameters
-    code = request.args.get('code')
-    state = request.args.get('state')
-    
     print(f"Received code: {code}")
     print(f"Received state: {state}")
     
     if not code:
-        return jsonify({
+        raise HTTPException(status_code=400, detail={
             'error': 'Code parameter is required',
             'message': 'This endpoint expects to be called by Linear OAuth with a code parameter',
-            'example': '/callback?code=your_oauth_code&state=your_state',
-            'received_params': dict(request.args)
-        }), 400
+            'example': '/callback?code=your_oauth_code&state=your_state'
+        })
     
     # Get client credentials from environment variables
     client_id = os.getenv('CLIENT_ID')
     client_secret = os.getenv('CLIENT_SECRET')
     
-    
     if not client_id or not client_secret:
-        return jsonify({'error': 'CLIENT_ID and CLIENT_SECRET environment variables are required'}), 500
+        raise HTTPException(status_code=500, detail={'error': 'CLIENT_ID and CLIENT_SECRET environment variables are required'})
     
     # Step 1: Exchange authorization code for access token
     token_url = 'https://api.linear.app/oauth/token'
@@ -250,22 +232,23 @@ def callback():
         'grant_type': 'authorization_code'
     }
 
-    
     try:
-        # Make POST request to Linear API for token exchange
-        token_response = requests.post(token_url, headers=headers, data=data)
+        # Make POST request to Linear API for token exchange (offload blocking call)
+        token_response = await asyncio.to_thread(
+            requests.post, token_url, headers=headers, data=data
+        )
         
         print(f"Token response status: {token_response.status_code}")
         print(f"Token response headers: {dict(token_response.headers)}")
         print(f"Token response text: {token_response.text}")
         
         if token_response.status_code != 200:
-            return jsonify({
+            raise HTTPException(status_code=400, detail={
                 'error': 'Token exchange failed',
                 'status_code': token_response.status_code,
                 'response': token_response.text,
                 'sent_data': data
-            }), 400
+            })
         
         token_data = token_response.json()
         
@@ -275,7 +258,7 @@ def callback():
         refresh_token = token_data.get('refresh_token')
         print(expires_in)
         if not access_token:
-            return jsonify({'error': 'No access token received'}), 400
+            raise HTTPException(status_code=400, detail={'error': 'No access token received'})
         
         # Step 2: Make GraphQL request to get viewer information
         graphql_url = 'https://api.linear.app/graphql'
@@ -288,19 +271,20 @@ def callback():
             "query": "query Viewer { viewer { id name organization { id name } } }"
         }
         
-        
-        # Make GraphQL request
-        graphql_response = requests.post(graphql_url, headers=graphql_headers, json=graphql_query)
+        # Make GraphQL request (offload blocking call)
+        graphql_response = await asyncio.to_thread(
+            requests.post, graphql_url, headers=graphql_headers, json=graphql_query
+        )
         
         print(f"GraphQL response status: {graphql_response.status_code}")
         print(f"GraphQL response text: {graphql_response.text}")
         
         if graphql_response.status_code != 200:
-            return jsonify({
+            raise HTTPException(status_code=400, detail={
                 'error': 'GraphQL request failed',
                 'status_code': graphql_response.status_code,
                 'response': graphql_response.text
-            }), 400
+            })
         
         graphql_data = graphql_response.json()
         
@@ -309,68 +293,265 @@ def callback():
         viewer_id = viewer_data.get('id')
         viewer_name = viewer_data.get('name')
         
-        
         if not viewer_id:
-            return jsonify({
+            raise HTTPException(status_code=400, detail={
                 'error': 'Could not retrieve viewer ID',
                 'graphql_response': graphql_data
-            }), 400
+            })
         
-        # Store the tokens and viewer information in database
+        # Store the tokens and viewer information in database (offload blocking call)
         print("=== SAVING TO DATABASE ===")
-        db_success = save_oauth_data(viewer_id, viewer_name, access_token, refresh_token, expires_in)
+        db_success = await asyncio.to_thread(
+            save_oauth_data, viewer_id, viewer_name, access_token, refresh_token, expires_in
+        )
         
         if not db_success:
             print("WARNING: Database save failed, but OAuth flow completed successfully")
-            return jsonify({
+            return {
                 'message': 'OAuth App Installed successfully (database save failed)',
                 'viewer_id': viewer_id,
                 'warning': 'Token data could not be saved to database - check DB_URL and network connectivity'
-            })
+            }
         
         print("=== SUCCESS ===")
 
-        return jsonify({
+        return {
             'message': 'OAuth App Installed successfully',
             'viewer_name': viewer_name
-        })
+        }
         
+    except HTTPException:
+        raise
     except requests.exceptions.RequestException as e:
-        return jsonify({
+        raise HTTPException(status_code=500, detail={
             'error': 'Request failed',
             'details': str(e)
-        }), 500
+        })
 
-session_cache={}
-@app.route('/webhook', methods=['POST'])
-def webhook():
+
+session_cache = {}
+
+
+async def process_webhook_background(
+    agent_session,
+    app_user_id,
+    agent_session_id,
+    issue_data,
+    event_type,
+    access_token,
+    agent_name,
+    comment_body
+):
+    """
+    Background task to process webhook: run agent and create response activity.
+    This runs after the webhook endpoint has already returned.
+    """
+    try:
+        issue_id = issue_data.get('id')
+        issue_title = issue_data.get('title')
+        issue_description = issue_data.get('description')
+        team_data = issue_data.get('team', {})
+        team_id = team_data.get('id')
+        team_name = team_data.get('name')
+        
+        extracted_data = {
+            'type': event_type,
+            'issueId': issue_id,
+            'title': issue_title,
+            'teamId': team_id,
+            'team_name': team_name,
+        }
+        
+        if event_type == 'Comment':
+            extracted_data['body'] = comment_body
+
+        try:
+            LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql"
+            LINEAR_API_KEY = os.getenv('LINEAR_API_KEY')
+            GET_PROJECT_BY_ISSUE = """
+                query GetProjectByIssue($issueId: String!) {
+                issue(id: $issueId) {
+                    id
+                    identifier
+                    project {
+                    id
+                    name
+                    }
+                    labels {
+                    nodes {
+                        id
+                        name
+                    }
+                    }
+                }
+                }
+                """
+            
+            def fetch_project_from_issue(issue_id: str):
+                headers = {
+                    "Authorization": f"{LINEAR_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "query": GET_PROJECT_BY_ISSUE,
+                    "variables": {"issueId": issue_id}
+                }
+
+                resp = requests.post(LINEAR_GRAPHQL_ENDPOINT, headers=headers, json=payload, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                if "errors" in data and data["errors"]:
+                    raise RuntimeError(json.dumps(data["errors"], indent=2))
+
+                return data.get("data", {}).get("issue")
+            
+            # Offload blocking HTTP call
+            issue = await asyncio.to_thread(fetch_project_from_issue, extracted_data['issueId'])
+            print(issue, "\n\n")
+            
+            labels = issue["labels"]["nodes"]
+            label_names = [l["name"] for l in labels]
+            print(label_names)
+
+            # Extract project info if available
+            project_id = None
+            project_name = None
+            if issue['project'] is not None:
+                project_id = issue['project']['id']
+                project_name = issue['project']['name']
+                print(f"Project: {project_id} - {project_name}")
+            
+            # Extract URLs from description and comment
+            def extract_urls(text: str) -> list:
+                if not text:
+                    return []
+                url_pattern = r'https?://[^\s<>"\')\]]+' 
+                return re.findall(url_pattern, text)
+            
+            extracted_urls = extract_urls(issue_description or '')
+            if comment_body:
+                extracted_urls.extend(extract_urls(comment_body))
+            
+            created_at = datetime.datetime.now(datetime.timezone.utc)
+            
+            # === BUILD AGENT CONTEXT ===
+            agent_context = AgentContext(
+                # Identity
+                agent_name=agent_name,
+                run_id=agent_session_id,
+                
+                # Issue Scope
+                issue_id=issue_id,
+                issue_identifier=issue.get('identifier', ''),
+                issue_title=issue_title or '',
+                issue_description=issue_description,
+                issue_state=None,  # Not currently extracted
+                issue_labels=label_names,
+                
+                # Trigger
+                trigger_type='comment' if event_type == 'Comment' else 'issue',
+                trigger_body=comment_body,
+                
+                # Project Scope
+                project_id=project_id,
+                project_name=project_name,
+                
+                # Retrieved Context (to be populated by retrieval layer)
+                project_kb_snippets=[],
+                related_issues=[],
+                
+                # External References
+                urls=extracted_urls,
+                
+                # Authentication
+                access_token=access_token,
+                
+                # Execution Metadata
+                user_id=app_user_id,
+                created_at=created_at,
+            )
+            
+            print("=== AGENT CONTEXT BUILT ===")
+            print(f"Agent: {agent_context.agent_name}")
+            print(f"Issue: {agent_context.issue_identifier} - {agent_context.issue_title}")
+            print(f"Trigger: {agent_context.trigger_type}")
+            print(f"Project: {agent_context.project_name}")
+            print(f"Labels: {agent_context.issue_labels}")
+            print(f"URLs: {agent_context.urls}")
+            
+            # === AGENT ROUTING ===
+            answer_comment = "I encountered an error while processing your request."
+            try:
+                print(f"\n=== RESOLVING AGENT: {agent_name} ===")
+                agent = AgentRegistry.get(agent_name)
+                print(f"Agent resolved: {agent.__class__.__name__}")
+                
+                # Run agent asynchronously (agent.run is already async)
+                result = await agent.run(agent_context)
+                print(f"Agent result: success={result.success}, status={result.status}")
+                answer_comment = result.response
+                
+            except KeyError as e:
+                print(f"Agent routing failed: {e}")
+                answer_comment = f"Error: Unknown agent '{agent_name}'. Available: {AgentRegistry.available_agents()}"
+            except Exception as e:
+                print(f"Agent execution failed: {e}")
+                answer_comment = f"I encountered an error while processing your request: {str(e)}"
+                
+        except Exception as db_error:
+            print(f"Database error in webhook: {str(db_error)}")
+            answer_comment = "Database error occurred."
+            
+        print("\nExtracted Data:\n", extracted_data)
+        # Create second agent activity (response)
+        print("=== CREATING RESPONSE ACTIVITY ===")
+        response_content = {
+            "type": "response",
+            "body": answer_comment
+        }
+        
+        # Offload blocking HTTP call
+        await asyncio.to_thread(create_agent_activity, access_token, agent_session_id, response_content)
+        
+        print("=== BACKGROUND WEBHOOK PROCESSING COMPLETE ===")
+        
+    except Exception as e:
+        print(f"Error in background webhook processing: {e}")
+
+
+@app.post('/webhook')
+async def webhook(request: Request):
     try:
         # Get JSON data from request body
-        data = request.get_json()
+        data = await request.json()
         
         if not data:
-            return jsonify({'error': 'No JSON data received'}), 400
+            raise HTTPException(status_code=400, detail={'error': 'No JSON data received'})
 
         print("=== WEBHOOK RECEIVED ===")
-        # print(f"Full webhook data: {data}")
-        print("\n\n",data,"\n\n")
+        print("\n\n", data, "\n\n")
+        
         # Check if this is an AgentSessionEvent
         if data.get('type') != 'AgentSessionEvent':
-            return jsonify({'message': 'Not an AgentSessionEvent, ignoring'}), 200
+            return {'message': 'Not an AgentSessionEvent, ignoring'}
         
         # Extract agentSession data
         agent_session = data.get('agentSession', {})
         if not agent_session:
-            return jsonify({'error': 'No agentSession found in webhook data'}), 400
-        extracted_data={}
+            raise HTTPException(status_code=400, detail={'error': 'No agentSession found in webhook data'})
+        
+        extracted_data = {}
         if agent_session.get('id') not in session_cache:
             now = datetime.datetime.now(datetime.timezone.utc)
             print("\ninside the if condition\n")
+            
             # Clean up expired sessions first
             expired = [sid for sid, expiry in session_cache.items() if expiry < now]
             for sid in expired:
                 print(f"Session {sid} expired and removed")
                 del session_cache[sid]
+            
             expires_at = now + datetime.timedelta(seconds=1800)
             session_cache[agent_session.get('id')] = expires_at
 
@@ -379,7 +560,6 @@ def webhook():
             event_type = 'Comment' if source_metadata is not None else 'Issue'
             
             print(f"Event type determined: {event_type}")
-            # print(f"Source metadata: {source_metadata}")
             
             # Extract common data
             app_user_id = data.get('appUserId')
@@ -390,30 +570,39 @@ def webhook():
             issue_description = issue_data.get('description')
             team_data = issue_data.get('team', {})
             team_id = team_data.get('id')
-            team_name=team_data.get('name')
+            team_name = team_data.get('name')
 
-            conn = get_db_connection()
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            check_query = 'SELECT expires_at, viewer_name FROM cortex.linear_agents_tokens WHERE viewer_id = %s'
-            cur.execute(check_query, (app_user_id,))
-            record = cur.fetchone()
-            agent_name=record['viewer_name']
-            expiry_of_linear=record['expires_at']
+            # Offload blocking DB call
+            def get_agent_info():
+                conn = get_db_connection()
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                check_query = 'SELECT expires_at, viewer_name FROM cortex.linear_agents_tokens WHERE viewer_id = %s'
+                cur.execute(check_query, (app_user_id,))
+                record = cur.fetchone()
+                cur.close()
+                conn.close()
+                return record
+            
+            record = await asyncio.to_thread(get_agent_info)
+            agent_name = record['viewer_name']
+            expiry_of_linear = record['expires_at']
             print(f"Agent Name: {agent_name}, Token Expiry: {expiry_of_linear}")
-            cur.close()
-            conn.close()
+            
             created_at = datetime.datetime.now(datetime.timezone.utc)
-            if created_at>expiry_of_linear:
-                schedule_daily_refresh()
+            if created_at > expiry_of_linear:
+                # Offload blocking token refresh
+                await asyncio.to_thread(schedule_daily_refresh)
+            
             print("=== GETTING ACCESS TOKEN ===")
-            access_token = get_access_token_by_viewer_id(app_user_id)
+            # Offload blocking DB call
+            access_token = await asyncio.to_thread(get_access_token_by_viewer_id, app_user_id)
             
             if not access_token:
-                return jsonify({
+                raise HTTPException(status_code=404, detail={
                     'error': 'No access token found for app user',
                     'app_user_id': app_user_id,
                     'message': 'User needs to complete OAuth flow first'
-                }), 404
+                })
             
             # Create first agent activity (thought)
             print("=== CREATING THOUGHT ACTIVITY ===")
@@ -423,194 +612,60 @@ def webhook():
                 "ephemeral": True
             }
             
-            thought_result = create_agent_activity(access_token, agent_session_id, thought_content)
+            # Offload blocking HTTP call
+            await asyncio.to_thread(create_agent_activity, access_token, agent_session_id, thought_content)
             
-            
-            extracted_data['type']=event_type
-            extracted_data['issueId']=issue_id
+            extracted_data['type'] = event_type
+            extracted_data['issueId'] = issue_id
             extracted_data['title'] = issue_title
-            extracted_data['teamId'] =team_id
+            extracted_data['teamId'] = team_id
             extracted_data['team_name'] = team_name
             
-            # Initialize comment_body to None
-            answer_comment = ""
-            data={}
+            # Get comment body if it's a comment event
             comment_body = None
             if event_type == 'Comment':
                 comment_data = agent_session.get('comment', {})
                 comment_body = comment_data.get('body')
                 extracted_data['body'] = comment_body
-                
 
-            try:
-                LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql"
-                LINEAR_API_KEY=os.getenv('LINEAR_API_KEY')
-                GET_PROJECT_BY_ISSUE = """
-                    query GetProjectByIssue($issueId: String!) {
-                    issue(id: $issueId) {
-                        id
-                        identifier
-                        project {
-                        id
-                        name
-                        }
-                        labels {
-                        nodes {
-                            id
-                            name
-                        }
-                        }
-                    }
-                    }
-                    """
-                def fetch_project_from_issue(issue_id: str):
-                    headers = {
-                        "Authorization": f"{LINEAR_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "query": GET_PROJECT_BY_ISSUE,
-                        "variables": {"issueId": issue_id}
-                    }
-
-                    resp = requests.post(LINEAR_GRAPHQL_ENDPOINT, headers=headers, json=payload, timeout=30)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    
-                    if "errors" in data and data["errors"]:
-                        raise RuntimeError(json.dumps(data["errors"], indent=2))
-
-                    return data.get("data", {}).get("issue")
-                
-                issue = fetch_project_from_issue(extracted_data['issueId'])
-                print(issue,"\n\n")
-                mcp_config = None
-                labels = issue["labels"]["nodes"]
-                label_names = [l["name"] for l in labels]
-                print(label_names)
-
-                # Extract project info if available
-                project_id = None
-                project_name = None
-                if issue['project'] is not None:
-                    project_id = issue['project']['id']
-                    project_name = issue['project']['name']
-                    print(f"Project: {project_id} - {project_name}")
-                
-                # Extract URLs from description and comment
-                def extract_urls(text: str) -> list:
-                    if not text:
-                        return []
-                    url_pattern = r'https?://[^\s<>"\')\]]+'
-                    return re.findall(url_pattern, text)
-                
-                extracted_urls = extract_urls(issue_description or '')
-                if comment_body:
-                    extracted_urls.extend(extract_urls(comment_body))
-                
-                # === BUILD AGENT CONTEXT ===
-                agent_context = AgentContext(
-                    # Identity
-                    agent_name=agent_name,
-                    run_id=agent_session_id,
-                    
-                    # Issue Scope
-                    issue_id=issue_id,
-                    issue_identifier=issue.get('identifier', ''),
-                    issue_title=issue_title or '',
-                    issue_description=issue_description,
-                    issue_state=None,  # Not currently extracted
-                    issue_labels=label_names,
-                    
-                    # Trigger
-                    trigger_type='comment' if event_type == 'Comment' else 'issue',
-                    trigger_body=comment_body,
-                    
-                    # Project Scope
-                    project_id=project_id,
-                    project_name=project_name,
-                    
-                    # Retrieved Context (to be populated by retrieval layer)
-                    project_kb_snippets=[],
-                    related_issues=[],
-                    
-                    # External References
-                    urls=extracted_urls,
-                    
-                    # Authentication
-                    access_token=access_token,
-                    
-                    # Execution Metadata
-                    user_id=app_user_id,
-                    created_at=created_at,
-                )
-                
-                print("=== AGENT CONTEXT BUILT ===")
-                print(f"Agent: {agent_context.agent_name}")
-                print(f"Issue: {agent_context.issue_identifier} - {agent_context.issue_title}")
-                print(f"Trigger: {agent_context.trigger_type}")
-                print(f"Project: {agent_context.project_name}")
-                print(f"Labels: {agent_context.issue_labels}")
-                print(f"URLs: {agent_context.urls}")
-                
-                # === AGENT ROUTING ===
-                answer_comment = "I encountered an error while processing your request."
-                try:
-                    print(f"\n=== RESOLVING AGENT: {agent_name} ===")
-                    agent = AgentRegistry.get(agent_name)
-                    print(f"Agent resolved: {agent.__class__.__name__}")
-                    
-                    # Run agent asynchronously
-                    async def run_agent():
-                        return await agent.run(agent_context)
-                    
-                    result = run_async_in_thread(run_agent)
-                    print(f"Agent result: success={result.success}, status={result.status}")
-                    answer_comment = result.response
-                    
-                except KeyError as e:
-                    print(f"Agent routing failed: {e}")
-                    answer_comment = f"Error: Unknown agent '{agent_name}'. Available: {AgentRegistry.available_agents()}"
-                except Exception as e:
-                    print(f"Agent execution failed: {e}")
-                    answer_comment = f"I encountered an error while processing your request: {str(e)}"
-                
-            except Exception as db_error:
-                print(f"Database error in webhook: {str(db_error)}")
-                answer_comment = "Database error occurred."
-                
-            print("\nExtracted Data:\n",extracted_data)
-            # Create second agent activity (response)
-            print("=== CREATING RESPONSE ACTIVITY ===")
-            response_content = {
-                "type": "response",
-                "body": answer_comment
-            }
+            # Start background processing for agent execution
+            # This allows the webhook to return immediately while agent runs
+            asyncio.create_task(process_webhook_background(
+                agent_session=agent_session,
+                app_user_id=app_user_id,
+                agent_session_id=agent_session_id,
+                issue_data=issue_data,
+                event_type=event_type,
+                access_token=access_token,
+                agent_name=agent_name,
+                comment_body=comment_body
+            ))
             
-            response_result = create_agent_activity(access_token, agent_session_id, response_content)
-            
-            
-            return jsonify({
-                'message': f'Webhook processed successfully - {event_type} type',
+            return {
+                'message': f'Webhook received - {event_type} type, processing in background',
                 'extracted_data': extracted_data,
                 'activities_created': {
-                    'thought': thought_result is not None,
-                    'response': response_result is not None
+                    'thought': True,
+                    'response': 'pending (background)'
                 }
-            })
-        return jsonify({
+            }
+        
+        return {
             'message': f'skipped the webhook with same id',
             'extracted_data': extracted_data,
             'activities_created': 'No Activities'
-        })
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error processing webhook: {e}")
-        return jsonify({
+        raise HTTPException(status_code=500, detail={
             'error': 'Failed to process webhook',
             'details': str(e)
-        }), 500
+        })
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    import uvicorn
+    uvicorn.run(app, host='0.0.0.0', port=8000)
