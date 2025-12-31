@@ -18,23 +18,26 @@ class StrategistAgent(BaseAgent):
         """
         Execute strategic analysis on the given context.
         
-        TODO: Implement actual strategy logic using:
-        - context.issue_title
-        - context.issue_description
-        - context.project_name
-        - context.related_issues
+        When triggered by a comment, the comment is the primary task.
+        When triggered by an issue, the issue details are primary.
         """
-        # Placeholder implementation
-        response = f"Strategic analysis for: {context.issue_title}"
+        if context.is_comment_triggered:
+            # Comment is the primary task
+            response = f"## Task (from comment):\n{context.trigger_body}\n\n"
+            response += f"### Issue Context: {context.issue_identifier} - {context.issue_title}"
+            if context.issue_description:
+                response += f"\n\n{context.issue_description}"
+        else:
+            # Issue is the primary focus
+            response = f"Strategic analysis for: {context.issue_title}"
+            if context.issue_description:
+                response += f"\n\n{context.issue_description}"
         
         if context.project_name:
             response += f"\n\nProject: {context.project_name}"
         
         if context.issue_labels:
             response += f"\n\nLabels: {', '.join(context.issue_labels)}"
-        
-        if context.trigger_body:
-            response += f"\n\nComment context: {context.trigger_body}"
         
         return AgentResult(
             success=True,
@@ -43,7 +46,8 @@ class StrategistAgent(BaseAgent):
             metadata={
                 "agent": "Strategist",
                 "issue_id": context.issue_id,
-                "project": context.project_name
+                "project": context.project_name,
+                "triggered_by": context.trigger_type
             }
         )
 

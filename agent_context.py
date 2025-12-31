@@ -59,3 +59,48 @@ class AgentContext:
         """Validate trigger_type is one of the allowed values."""
         if self.trigger_type not in ("issue", "comment"):
             raise ValueError(f"trigger_type must be 'issue' or 'comment', got '{self.trigger_type}'")
+    
+    @property
+    def primary_task(self) -> str:
+        """
+        Get the primary task to focus on.
+        
+        - If triggered by comment: The comment body is the primary task
+        - If triggered by issue: The issue title + description is the primary task
+        """
+        if self.trigger_type == "comment" and self.trigger_body:
+            return self.trigger_body
+        else:
+            parts = [self.issue_title]
+            if self.issue_description:
+                parts.append(self.issue_description)
+            return "\n\n".join(parts)
+    
+    @property
+    def context_summary(self) -> str:
+        """
+        Get the contextual information (secondary to the primary task).
+        
+        - If triggered by comment: Issue title/description as background context
+        - If triggered by issue: Project and labels as context
+        """
+        parts = []
+        
+        if self.trigger_type == "comment":
+            # When comment is primary, issue is context
+            parts.append(f"Issue: {self.issue_identifier} - {self.issue_title}")
+            if self.issue_description:
+                parts.append(f"Description: {self.issue_description}")
+        
+        if self.project_name:
+            parts.append(f"Project: {self.project_name}")
+        
+        if self.issue_labels:
+            parts.append(f"Labels: {', '.join(self.issue_labels)}")
+        
+        return "\n".join(parts) if parts else ""
+    
+    @property
+    def is_comment_triggered(self) -> bool:
+        """Check if this context was triggered by a comment."""
+        return self.trigger_type == "comment" and bool(self.trigger_body)
