@@ -482,15 +482,18 @@ async def process_webhook_background(
             
             # === AGENT ROUTING ===
             answer_comment = "I encountered an error while processing your request."
+            agent_result = None
+            execution_start = datetime.datetime.now(datetime.timezone.utc)
+            
             try:
                 print(f"\n=== RESOLVING AGENT: {agent_name} ===")
                 agent = AgentRegistry.get(agent_name)
                 print(f"Agent resolved: {agent.__class__.__name__}")
                 
                 # Run agent asynchronously (agent.run is already async)
-                result = await agent.run(agent_context)
-                print(f"Agent result: success={result.success}, status={result.status}")
-                answer_comment = result.response
+                agent_result = await agent.run(agent_context)
+                print(f"Agent result: success={agent_result.success}, status={agent_result.status}")
+                answer_comment = agent_result.response
                 
             except KeyError as e:
                 print(f"Agent routing failed: {e}")
@@ -498,6 +501,43 @@ async def process_webhook_background(
             except Exception as e:
                 print(f"Agent execution failed: {e}")
                 answer_comment = f"I encountered an error while processing your request: {str(e)}"
+            
+            # === SAVE EXECUTION TO DATABASE ===
+            execution_end = datetime.datetime.now(datetime.timezone.utc)
+            execution_time_ms = int((execution_end - execution_start).total_seconds() * 1000)
+            
+            try:
+                from context_assembler import context_assembler
+                
+                # Extract structured output if available (Strategist returns this)
+                structured_output = None
+                if agent_result and hasattr(agent_result, 'metadata') and agent_result.metadata:
+                    structured_output = agent_result.metadata.get('structured_output')
+                
+                await context_assembler.save_execution(
+                    agent_name=agent_name,
+                    issue_id=issue_id,
+                    trigger_type='comment' if event_type == 'Comment' else 'issue',
+                    trigger_comment_id=None,  # TODO: pass comment ID when available
+                    trigger_body=comment_body if event_type == 'Comment' else issue_title,
+                    input_context={
+                        'issue_id': issue_id,
+                        'issue_identifier': agent_context.issue_identifier,
+                        'issue_title': issue_title,
+                        'trigger_type': agent_context.trigger_type,
+                        'project_id': project_id,
+                        'project_name': project_name,
+                    },
+                    success=agent_result.success if agent_result else False,
+                    status=agent_result.status if agent_result else 'error',
+                    response_text=answer_comment,
+                    structured_output=structured_output,
+                    execution_time_ms=execution_time_ms,
+                    error_message=None if (agent_result and agent_result.success) else answer_comment,
+                )
+                print(f"=== EXECUTION LOGGED ({execution_time_ms}ms) ===")
+            except Exception as log_error:
+                print(f"Failed to log execution: {log_error}")
                 
         except Exception as db_error:
             print(f"Database error in webhook: {str(db_error)}")
@@ -662,6 +702,153 @@ async def webhook(request: Request):
         print(f"Error processing webhook: {e}")
         raise HTTPException(status_code=500, detail={
             'error': 'Failed to process webhook',
+            'details': str(e)
+        })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SYNC WEBHOOK - Syncs Linear issues and comments to cortex database
+# ═══════════════════════════════════════════════════════════════════════════
+
+from issue_syncer import issue_syncer
+from dateutil import parser as date_parser
+
+
+@app.post('/sync_webhook')
+async def sync_webhook(request: Request):
+    """
+    Webhook for syncing Linear issues and comments to cortex database.
+    
+    Handles:
+    - Issue events (create, update)
+    - Comment events
+    
+    Configure in Linear webhook settings to receive:
+    - Issues
+    - Comments
+    """
+    try:
+        data = await request.json()
+        
+        if not data:
+            raise HTTPException(status_code=400, detail={'error': 'No JSON data received'})
+        
+        event_type = data.get('type')
+        action = data.get('action')
+        
+        print(f"=== SYNC WEBHOOK: {event_type} ({action}) ===")
+        
+        # Handle Issue events
+        if event_type == 'Issue':
+            issue_data = data.get('data', {})
+            
+            # Extract issue fields
+            issue_id = issue_data.get('id')
+            if not issue_id:
+                return {'message': 'No issue ID, skipping'}
+            
+            # Parse timestamps
+            created_at = date_parser.parse(issue_data.get('createdAt')) if issue_data.get('createdAt') else datetime.datetime.now(datetime.timezone.utc)
+            updated_at = date_parser.parse(issue_data.get('updatedAt')) if issue_data.get('updatedAt') else created_at
+            
+            # Extract team info
+            team = issue_data.get('team', {}) or {}
+            team_id = team.get('id') or issue_data.get('teamId')
+            team_name = team.get('name')
+            
+            # Extract project info
+            project = issue_data.get('project', {}) or {}
+            project_id = project.get('id') if project else None
+            project_name = project.get('name') if project else None
+            
+            # Extract labels
+            labels_data = issue_data.get('labels', []) or []
+            labels = [l.get('name') for l in labels_data if l.get('name')] if isinstance(labels_data, list) else []
+            
+            # Extract assignee
+            assignee = issue_data.get('assignee', {}) or {}
+            assignee_id = assignee.get('id') if assignee else None
+            
+            # Extract creator
+            creator = issue_data.get('creator', {}) or {}
+            creator_id = creator.get('id') if creator else None
+            
+            # Sync to database
+            success = await issue_syncer.sync_issue(
+                issue_id=issue_id,
+                identifier=issue_data.get('identifier', ''),
+                title=issue_data.get('title', ''),
+                description=issue_data.get('description'),
+                state=issue_data.get('state', {}).get('name') if issue_data.get('state') else None,
+                priority=issue_data.get('priority'),
+                project_id=project_id,
+                project_name=project_name,
+                team_id=team_id,
+                team_name=team_name,
+                labels=labels,
+                assignee_id=assignee_id,
+                creator_id=creator_id,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+            
+            return {
+                'message': f'Issue {action} synced',
+                'issue_id': issue_id,
+                'success': success
+            }
+        
+        # Handle Comment events
+        elif event_type == 'Comment':
+            comment_data = data.get('data', {})
+            
+            comment_id = comment_data.get('id')
+            issue_id = comment_data.get('issueId') or (comment_data.get('issue', {}) or {}).get('id')
+            
+            if not comment_id or not issue_id:
+                return {'message': 'Missing comment or issue ID, skipping'}
+            
+            # Parse timestamp
+            created_at = date_parser.parse(comment_data.get('createdAt')) if comment_data.get('createdAt') else datetime.datetime.now(datetime.timezone.utc)
+            
+            # Extract author
+            user = comment_data.get('user', {}) or {}
+            author_id = user.get('id')
+            author_name = user.get('name')
+            
+            # Check if this is an agent response (you can customize this logic)
+            is_agent_response = comment_data.get('botActor') is not None
+            agent_name = comment_data.get('botActor', {}).get('name') if is_agent_response else None
+            
+            # Sync to database
+            success = await issue_syncer.sync_comment(
+                comment_id=comment_id,
+                issue_id=issue_id,
+                body=comment_data.get('body', ''),
+                author_id=author_id,
+                author_name=author_name,
+                created_at=created_at,
+                is_agent_response=is_agent_response,
+                agent_name=agent_name,
+            )
+            
+            return {
+                'message': f'Comment {action} synced',
+                'comment_id': comment_id,
+                'success': success
+            }
+        
+        # Ignore other event types
+        else:
+            print(f"Ignoring event type: {event_type}")
+            return {'message': f'Event type {event_type} not handled'}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in sync webhook: {e}")
+        raise HTTPException(status_code=500, detail={
+            'error': 'Failed to process sync webhook',
             'details': str(e)
         })
 
