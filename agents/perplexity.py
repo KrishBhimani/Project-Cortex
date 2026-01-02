@@ -191,15 +191,20 @@ class PerplexityAgent(BaseAgent):
         """Build the research prompt from AgentContext."""
         parts = []
         
-        # Issue context
-        parts.append(f"## Issue: {context.issue_identifier} - {context.issue_title}")
-        
-        if context.issue_description:
-            parts.append(f"\n### Description:\n{context.issue_description}")
-        
-        # Trigger context (if comment)
-        if context.trigger_type == "comment" and context.trigger_body:
-            parts.append(f"\n### Request:\n{context.trigger_body}")
+        if context.is_comment_triggered:
+            # Comment is the PRIMARY task - issue is context
+            parts.append("## Your Task (from comment):")
+            parts.append(f"{context.trigger_body}")
+            parts.append("")
+            parts.append("## Background Context (Issue):")
+            parts.append(f"**{context.issue_identifier} - {context.issue_title}**")
+            if context.issue_description:
+                parts.append(f"\n{context.issue_description}")
+        else:
+            # Issue is the PRIMARY task
+            parts.append(f"## Issue: {context.issue_identifier} - {context.issue_title}")
+            if context.issue_description:
+                parts.append(f"\n### Description:\n{context.issue_description}")
         
         # URLs if any
         if context.urls:
@@ -216,7 +221,10 @@ class PerplexityAgent(BaseAgent):
             parts.append(f"\n### Labels: {', '.join(context.issue_labels)}")
         
         parts.append("\n---\n")
-        parts.append("Please research and respond to the above query using the appropriate Perplexity tool.")
+        if context.is_comment_triggered:
+            parts.append("Focus on completing the task described in the comment above. Use the issue context for background understanding.")
+        else:
+            parts.append("Please research and respond to the above query using the appropriate Perplexity tool.")
         
         return "\n".join(parts)
     
