@@ -15,7 +15,7 @@ import requests
 from typing import List
 from agents.base import BaseAgent, AgentResult
 from agents.registry import AgentRegistry
-from agent_context import AgentContext
+from core.context import AgentContext
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -169,7 +169,7 @@ class ResearcherAgent(BaseAgent):
     def _build_db(self) -> SqliteDb:
         """Build SQLite database for memory."""
         db = SqliteDb(
-            db_file="cortex_memory.db",
+            db_file="data/cortex_memory.db",
             session_table="researcher_sessions",
             memory_table="researcher_memories",
         )

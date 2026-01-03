@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent_context import AgentContext
+    from core.context import AgentContext
 
 
 @dataclass

@@ -9,8 +9,8 @@ from agno.run.agent import RunEvent
 from dotenv import load_dotenv
 import requests
 import json
-from refresh_linear_tokens import schedule_daily_refresh
-from agent_context import AgentContext
+from db.linear_tokens import schedule_daily_refresh
+from core.context import AgentContext
 from agents import AgentRegistry
 import psycopg2
 import psycopg2.extras
@@ -507,7 +507,7 @@ async def process_webhook_background(
             execution_time_ms = int((execution_end - execution_start).total_seconds() * 1000)
             
             try:
-                from context_assembler import context_assembler
+                from db.assembler import context_assembler
                 
                 # Extract structured output if available (Strategist returns this)
                 structured_output = None
@@ -710,7 +710,7 @@ async def webhook(request: Request):
 # SYNC WEBHOOK - Syncs Linear issues and comments to cortex database
 # ═══════════════════════════════════════════════════════════════════════════
 
-from issue_syncer import issue_syncer
+from db.syncer import issue_syncer
 from dateutil import parser as date_parser
 
 

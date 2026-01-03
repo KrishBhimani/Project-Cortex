@@ -14,7 +14,7 @@ from typing import Optional
 
 from agents.base import BaseAgent, AgentResult
 from agents.registry import AgentRegistry
-from agent_context import AgentContext
+from core.context import AgentContext
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -101,7 +101,7 @@ class PerplexityAgent(BaseAgent):
     def _build_db(self) -> SqliteDb:
         """Build SQLite database for session memory."""
         db = SqliteDb(
-            db_file="cortex_memory.db",
+            db_file="data/cortex_memory.db",
             session_table="perplexity_sessions",
             memory_table="perplexity_memories",
         )

@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 
 from agents.base import BaseAgent, AgentResult
 from agents.registry import AgentRegistry
-from agent_context import AgentContext
-from strategist_context import StrategistAgentContext
+from core.context import AgentContext
+from core.strategist_context import StrategistAgentContext
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -133,7 +133,7 @@ class StrategistAgent(BaseAgent):
     def _build_db(self) -> SqliteDb:
         """Build SQLite database for session memory."""
         db = SqliteDb(
-            db_file="cortex_memory.db",
+            db_file="data/cortex_memory.db",
             session_table="strategist_sessions",
             memory_table="strategist_memories",
         )

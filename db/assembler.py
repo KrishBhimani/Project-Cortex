@@ -16,7 +16,7 @@ import json
 import psycopg2
 import psycopg2.extras
 
-from strategist_context import (
+from core.strategist_context import (
     StrategistAgentContext,
     CommentSnapshot,
     ResearchOutput,
