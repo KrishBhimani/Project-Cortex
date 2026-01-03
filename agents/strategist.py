@@ -127,26 +127,28 @@ class StrategistAgent(BaseAgent):
     """
     
     def __init__(self):
-        self.db = self._build_db()
-        self.agent = self._create_agent()
+        self.db = None  # Built at runtime with project_id
+        self.agent = None  # Created at runtime with project-scoped db
     
-    def _build_db(self) -> SqliteDb:
-        """Build SQLite database for session memory."""
+    def _build_db(self, project_id: str = None) -> SqliteDb:
+        """Build SQLite database for session memory with project-scoped table names."""
+        # Use project_id in table names for project isolation
+        suffix = f"_{project_id}" if project_id else ""
         db = SqliteDb(
             db_file="data/cortex_memory.db",
-            session_table="strategist_sessions",
-            memory_table="strategist_memories",
+            session_table=f"strategist_sessions{suffix}",
+            memory_table=f"strategist_memories{suffix}",
         )
-        print("StrategistAgent: Memory enabled with SQLite")
+        print(f"StrategistAgent: Memory enabled with SQLite (project: {project_id or 'default'})")
         return db
     
-    def _create_agent(self) -> Agent:
-        """Create the Agno agent."""
+    def _create_agent(self, db: SqliteDb) -> Agent:
+        """Create the Agno agent with the given database."""
         return Agent(
             name="Strategist",
-            model=OpenAIChat(id="gpt-4.1"),  # Using stronger model for strategy
+            model=OpenAIChat(id="gpt-4.1-nano"),  # Using stronger model for strategy
             instructions=STRATEGIST_INSTRUCTIONS,
-            db=self.db,
+            db=db,
             read_chat_history=True,
             add_history_to_context=True,
             markdown=False,  # We want JSON output
@@ -325,6 +327,11 @@ class StrategistAgent(BaseAgent):
             print(f"\n=== STRATEGIST AGENT EXECUTING ===")
             print(f"Issue: {context.issue_identifier} - {context.issue_title}")
             print(f"Trigger: {context.trigger_type}")
+            
+            # Build project-scoped database and agent at runtime
+            project_id = getattr(context, 'project_id', None)
+            self.db = self._build_db(project_id)
+            self.agent = self._create_agent(self.db)
             
             # Build prompt
             prompt = self._build_prompt(context)
