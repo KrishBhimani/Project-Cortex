@@ -9,8 +9,8 @@ from agno.run.agent import RunEvent
 from dotenv import load_dotenv
 import requests
 import json
-from refresh_linear_tokens import schedule_daily_refresh
-from agent_context import AgentContext
+from db.linear_tokens import schedule_daily_refresh
+from core.context import AgentContext
 from agents import AgentRegistry
 import psycopg2
 import psycopg2.extras
@@ -490,8 +490,50 @@ async def process_webhook_background(
                 agent = AgentRegistry.get(agent_name)
                 print(f"Agent resolved: {agent.__class__.__name__}")
                 
-                # Run agent asynchronously (agent.run is already async)
-                agent_result = await agent.run(agent_context)
+                # === RICH CONTEXT FOR STRATEGIST ===
+                # Strategist gets enhanced context with prior outputs and related issues
+                context_to_use = agent_context
+                
+                if agent_name.lower() == "strategist":
+                    try:
+                        from db.assembler import context_assembler
+                        print("=== ASSEMBLING RICH CONTEXT FOR STRATEGIST ===")
+                        
+                        # Build rich context with DB data
+                        rich_context = await context_assembler.assemble_strategist_context(
+                            issue_id=issue_id,
+                            run_id=agent_session_id,
+                            trigger_type='comment' if event_type == 'Comment' else 'issue',
+                            trigger_body=comment_body,
+                            user_id=app_user_id,
+                            access_token=access_token,
+                            # Fallback if issue not synced yet
+                            fallback_issue_data={
+                                'id': issue_id,
+                                'identifier': issue.get('identifier', ''),
+                                'title': issue_title,
+                                'description': issue_description,
+                                'project_id': project_id,
+                                'project_name': project_name,
+                                'team_id': team_id,
+                                'labels': label_names,
+                            }
+                        )
+                        
+                        print(f"Rich context assembled:")
+                        print(f"  - Recent comments: {len(rich_context.recent_comments)}")
+                        print(f"  - Prior research: {len(rich_context.prior_research)}")
+                        print(f"  - Prior strategies: {len(rich_context.prior_strategies)}")
+                        print(f"  - Related issues: {len(rich_context.related_issues)}")
+                        
+                        context_to_use = rich_context
+                        
+                    except Exception as ctx_error:
+                        print(f"Failed to assemble rich context, using basic context: {ctx_error}")
+                        # Fall back to basic context
+                
+                # Run agent with appropriate context
+                agent_result = await agent.run(context_to_use)
                 print(f"Agent result: success={agent_result.success}, status={agent_result.status}")
                 answer_comment = agent_result.response
                 
@@ -507,7 +549,7 @@ async def process_webhook_background(
             execution_time_ms = int((execution_end - execution_start).total_seconds() * 1000)
             
             try:
-                from context_assembler import context_assembler
+                from db.assembler import context_assembler
                 
                 # Extract structured output if available (Strategist returns this)
                 structured_output = None
@@ -710,7 +752,7 @@ async def webhook(request: Request):
 # SYNC WEBHOOK - Syncs Linear issues and comments to cortex database
 # ═══════════════════════════════════════════════════════════════════════════
 
-from issue_syncer import issue_syncer
+from db.syncer import issue_syncer
 from dateutil import parser as date_parser
 
 

@@ -15,7 +15,7 @@ import requests
 from typing import List
 from agents.base import BaseAgent, AgentResult
 from agents.registry import AgentRegistry
-from agent_context import AgentContext
+from core.context import AgentContext
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -152,8 +152,8 @@ class ResearcherAgent(BaseAgent):
     
     def __init__(self):
         self.tools = self._build_tools()
-        self.db = self._build_db()
-        self.agent = self._create_agent()
+        self.db = None  # Built at runtime with project_id
+        self.agent = None  # Created at runtime with project-scoped db
     
     def _build_tools(self) -> list:
         """Build the list of tools."""
@@ -166,24 +166,25 @@ class ResearcherAgent(BaseAgent):
         print("ResearcherAgent: Tools loaded - PDF, YouTube, Trafilatura, Tavily")
         return tools
     
-    def _build_db(self) -> SqliteDb:
-        """Build SQLite database for memory."""
+    def _build_db(self, project_id: str = None) -> SqliteDb:
+        """Build SQLite database for memory with project-scoped table names."""
+        suffix = f"_{project_id}" if project_id else ""
         db = SqliteDb(
-            db_file="cortex_memory.db",
-            session_table="researcher_sessions",
-            memory_table="researcher_memories",
+            db_file="data/cortex_memory.db",
+            session_table=f"researcher_sessions{suffix}",
+            memory_table=f"researcher_memories{suffix}",
         )
-        print("ResearcherAgent: Memory enabled with SQLite (cortex_memory.db)")
+        print(f"ResearcherAgent: Memory enabled with SQLite (project: {project_id or 'default'})")
         return db
     
-    def _create_agent(self) -> Agent:
+    def _create_agent(self, db: SqliteDb) -> Agent:
         """Create the Agno agent with all tools and memory."""
         return Agent(
             name="Researcher",
             model=OpenAIChat(id="gpt-4.1-nano"),
             tools=self.tools,
             instructions=RESEARCHER_INSTRUCTIONS,
-            db=self.db,
+            db=db,
             enable_agentic_memory=True,
             num_history_messages=5,
             markdown=True,
@@ -251,6 +252,11 @@ class ResearcherAgent(BaseAgent):
         try:
             # Set the access token for authenticated file downloads (PDF tool uses this)
             set_access_token(context.access_token)
+            
+            # Build project-scoped database and agent at runtime
+            project_id = getattr(context, 'project_id', None)
+            self.db = self._build_db(project_id)
+            self.agent = self._create_agent(self.db)
             
             # Build the research prompt
             prompt = self._build_research_prompt(context)

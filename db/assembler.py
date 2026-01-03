@@ -16,7 +16,7 @@ import json
 import psycopg2
 import psycopg2.extras
 
-from strategist_context import (
+from core.strategist_context import (
     StrategistAgentContext,
     CommentSnapshot,
     ResearchOutput,
@@ -122,26 +122,35 @@ class ContextAssembler:
     
     async def fetch_prior_research(
         self, 
-        issue_id: str, 
-        limit: int = 3
+        project_id: str,
+        current_issue_id: str = None,  # Exclude current issue's research if desired
+        limit: int = 5
     ) -> List[ResearchOutput]:
         """
-        Fetch recent Researcher agent outputs for this issue.
+        Fetch recent Researcher agent outputs for the entire project.
+        
+        Project-scoped so Strategist can see all research done in the project.
         """
+        if not project_id:
+            return []
+        
         def _fetch():
             self._ensure_connection()
             cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             
+            # Join with issues to filter by project
             query = """
-            SELECT id, response_text, structured_output, started_at
-            FROM cortex.agent_executions
-            WHERE issue_id = %s 
-              AND agent_name = 'Researcher'
-              AND success = TRUE
-            ORDER BY started_at DESC
+            SELECT e.id, e.issue_id, i.identifier as issue_identifier,
+                   e.response_text, e.structured_output, e.started_at
+            FROM cortex.agent_executions e
+            JOIN cortex.issues i ON e.issue_id = i.id
+            WHERE i.project_id = %s 
+              AND e.agent_name = 'Researcher'
+              AND e.success = TRUE
+            ORDER BY e.started_at DESC
             LIMIT %s
             """
-            cur.execute(query, (issue_id, limit))
+            cur.execute(query, (project_id, limit))
             results = cur.fetchall()
             cur.close()
             
@@ -158,9 +167,14 @@ class ContextAssembler:
                             so = {}
                     sources = so.get('sources', [])
                 
+                # Include issue identifier in summary for context
+                summary = r['response_text'] or ''
+                if r.get('issue_identifier'):
+                    summary = f"[From {r['issue_identifier']}] {summary}"
+                
                 outputs.append(ResearchOutput(
                     execution_id=str(r['id']),
-                    summary=r['response_text'] or '',
+                    summary=summary,
                     sources=sources,
                     created_at=r['started_at']
                 ))
@@ -218,7 +232,7 @@ class ContextAssembler:
         self, 
         issue_id: str,
         project_id: str,
-        embedding: List[float],
+        embedding,  # Can be list or string from DB
         limit: int = 5
     ) -> List[RelatedIssue]:
         """
@@ -233,6 +247,17 @@ class ContextAssembler:
             self._ensure_connection()
             cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             
+            # Handle embedding format - psycopg2 may return as string
+            if isinstance(embedding, str):
+                # Already a vector string from DB, use as-is
+                embedding_str = embedding
+            elif isinstance(embedding, (list, tuple)):
+                # Convert list to pgvector format
+                embedding_str = f"[{','.join(map(str, embedding))}]"
+            else:
+                print(f"Unknown embedding type: {type(embedding)}")
+                return []
+            
             # pgvector cosine distance query
             query = """
             SELECT id, identifier, title, state,
@@ -245,7 +270,6 @@ class ContextAssembler:
             LIMIT %s
             """
             
-            embedding_str = f"[{','.join(map(str, embedding))}]"
             cur.execute(query, (embedding_str, project_id, issue_id, embedding_str, limit))
             results = cur.fetchall()
             cur.close()
@@ -292,8 +316,9 @@ class ContextAssembler:
             # 2. Fetch recent comments
             recent_comments = await self.fetch_recent_comments(issue_id, limit=10)
             
-            # 3. Fetch prior agent outputs
-            prior_research = await self.fetch_prior_research(issue_id, limit=3)
+            # 3. Fetch prior agent outputs (project-scoped)
+            project_id = str(issue['project_id']) if issue.get('project_id') else None
+            prior_research = await self.fetch_prior_research(project_id, limit=5)
             prior_strategies = await self.fetch_prior_strategies(issue_id, limit=2)
             
             # 4. Fetch related issues (if we have embedding)

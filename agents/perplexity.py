@@ -14,7 +14,7 @@ from typing import Optional
 
 from agents.base import BaseAgent, AgentResult
 from agents.registry import AgentRegistry
-from agent_context import AgentContext
+from core.context import AgentContext
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -90,7 +90,7 @@ class PerplexityAgent(BaseAgent):
     """
     
     def __init__(self):
-        self.db = self._build_db()
+        self.db = None  # Built at runtime with project_id
         self.agent = None
         self.mcp_session = None
         self.stdio_client_context = None
@@ -98,14 +98,17 @@ class PerplexityAgent(BaseAgent):
         self.max_retries = 3
         self.retry_delay = 1
     
-    def _build_db(self) -> SqliteDb:
-        """Build SQLite database for session memory."""
+    def _build_db(self, project_id: str = None) -> SqliteDb:
+        """Build SQLite database for session memory with project-scoped table names."""
+        # Use project_id in table names for project isolation
+        # All agents within a project share the same session/memory tables
+        suffix = f"_{project_id}" if project_id else ""
         db = SqliteDb(
-            db_file="cortex_memory.db",
-            session_table="perplexity_sessions",
-            memory_table="perplexity_memories",
+            db_file="data/cortex_memory.db",
+            session_table=f"perplexity_sessions{suffix}",
+            memory_table=f"perplexity_memories{suffix}",
         )
-        logger.info("PerplexityAgent: Memory enabled with SQLite")
+        logger.info(f"PerplexityAgent: Memory enabled with SQLite (project: {project_id or 'default'})")
         return db
     
     def _get_mcp_config(self) -> dict:
@@ -121,7 +124,7 @@ class PerplexityAgent(BaseAgent):
             }
         }
     
-    async def _initialize_mcp(self, context: AgentContext) -> None:
+    async def _initialize_mcp(self, context) -> None:
         """Initialize MCP session and tools."""
         mcp_config = self._get_mcp_config()
         server_config = mcp_config["server"]
@@ -151,6 +154,10 @@ class PerplexityAgent(BaseAgent):
             self.mcp_tools = MCPTools(session=self.mcp_session)
             await self.mcp_tools.initialize()
             logger.info("✅ Perplexity MCP tools loaded")
+            
+            # Build project-scoped database
+            project_id = getattr(context, 'project_id', None)
+            self.db = self._build_db(project_id)
             
             # Create the agent with MCP tools
             self.agent = Agent(

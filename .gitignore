@@ -10,4 +10,7 @@ wheels/
 .venv
 .environments
 .env
-cortex_memory.db
+
+# Runtime data
+data/
+*.db
