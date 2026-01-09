@@ -2,6 +2,7 @@ import os
 import datetime
 import asyncio
 import re
+import base64
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from agno.team import TeamRunEvent
@@ -19,6 +20,44 @@ app = FastAPI()
 
 # Load environment variables
 load_dotenv()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LLMOPS - LANGFUSE OBSERVABILITY
+# ═══════════════════════════════════════════════════════════════════════════
+# Auto-instrument all LLM calls for tracing, cost tracking, and debugging
+
+def init_langfuse_tracing():
+    """Initialize OpenLIT for automatic LLM tracing to Langfuse."""
+    try:
+        import openlit
+        
+        langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
+        langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
+        langfuse_host = os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+        
+        if langfuse_public_key and langfuse_secret_key:
+            # Encode credentials for OTLP auth header
+            auth_token = base64.b64encode(
+                f"{langfuse_public_key}:{langfuse_secret_key}".encode()
+            ).decode()
+            
+            openlit.init(
+                otlp_endpoint=f"{langfuse_host}/api/public/otel",
+                otlp_headers={"Authorization": f"Basic {auth_token}"},
+                environment=os.getenv('ENVIRONMENT', 'development'),
+                application_name="project-cortex"
+            )
+            print("✅ Langfuse tracing enabled via OpenLIT")
+        else:
+            print("⚠️  Langfuse credentials not found, tracing disabled")
+            print("   Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY to enable")
+    except ImportError:
+        print("⚠️  OpenLIT not installed, tracing disabled")
+    except Exception as e:
+        print(f"⚠️  Failed to initialize Langfuse tracing: {e}")
+
+# Initialize tracing on import
+init_langfuse_tracing()
 
 
 def get_db_connection():
