@@ -33,7 +33,7 @@ def init_langfuse_tracing():
         
         langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
         langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
-        langfuse_host = os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+        langfuse_host = os.getenv('LANGFUSE_BASE_URL', 'https://cloud.langfuse.com')
         
         if langfuse_public_key and langfuse_secret_key:
             # Encode credentials for OTLP auth header
