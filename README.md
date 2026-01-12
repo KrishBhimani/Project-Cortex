@@ -50,7 +50,15 @@ Cortex deploys **specialized autonomous agents** that collaborate through shared
 | **Intelligence** | Perplexity AI with automatic source citation |
 | **Output** | Comprehensive research with inline citations |
 
-> **Collaborative Flow:** ResearcherAgent gathers intelligence → StrategistAgent synthesizes into plans → outputs feed into project memory for future agents.
+### 📚 ArchivistAgent — *The Memory Curator*
+| Aspect | Details |
+|--------|---------|
+| **Trigger** | `@archivist` mention or automatic on issue close |
+| **Capability** | Ingests documents (PDF, text) into project knowledge base, summarizes closed issues |
+| **Intelligence** | Agno Knowledge with Qdrant vector storage, LLM-powered summarization |
+| **Output** | Per-project vector collections, closed issue summaries with learnings |
+
+> **Collaborative Flow:** ResearcherAgent gathers intelligence → StrategistAgent synthesizes into plans → ArchivistAgent curates knowledge → outputs feed into project memory for future agents.
 
 ---
 
@@ -75,14 +83,16 @@ Each agent receives a frozen, read-only `AgentContext` containing:
 |-------|-------|---------|
 | **Structured History** | PostgreSQL | Issues, comments, agent executions |
 | **Related Issues** | pgvector | Similarity search on issue embeddings |
-| **Project KB** | Qdrant (planned) | Curated project knowledge |
+| **Project KB** | Qdrant | Per-project curated knowledge (via Archivist) |
+| **Closed Issue Memory** | PostgreSQL | Summarized learnings from completed work |
 | **Active Context** | In-memory | Current agent execution state |
 
 ### Database Schema (`cortex` schema)
 ```
-cortex.issues           → Synced Linear issues with embeddings
-cortex.issue_comments   → Discussion history
-cortex.agent_executions → What agents did, when, and why
+cortex.issues                  → Synced Linear issues with embeddings
+cortex.issue_comments          → Discussion history
+cortex.agent_executions        → What agents did, when, and why
+cortex.closed_issue_summaries  → LLM-generated summaries of closed issues
 ```
 
 ---
@@ -98,6 +108,10 @@ flowchart TD
     D --> E["Generate Embeddings"]
     E --> D
     
+    C -->|"Issue Closed"| AA["Trigger Archivist"]
+    AA --> AB["📚 ArchivistAgent"]
+    AB --> AC["Summarize & Store"]
+    
     B -->|"Agent Tagged"| F["/webhook"]
     F --> G["Context Assembly"]
     G --> H[("Fetch from DB")]
@@ -108,6 +122,7 @@ flowchart TD
     K -->|"@researcher"| L["🔬 ResearcherAgent"]
     K -->|"@strategist"| M["🧠 StrategistAgent"]
     K -->|"@perplexity"| N["🔍 PerplexityAgent"]
+    K -->|"@archivist"| AB
     
     L --> O["Agent Execution"]
     M --> O
@@ -127,7 +142,7 @@ flowchart TD
 | Framework | FastAPI + Uvicorn |
 | AI Framework | Agno |
 | Database | PostgreSQL + pgvector |
-| Vector DB | Qdrant (planned) |
+| Vector DB | Qdrant |
 | LLM | OpenAI GPT-4.1 |
 | Embeddings | OpenAI ada-002 |
 | Research | Tavily, Perplexity MCP |
@@ -162,6 +177,7 @@ CLIENT_ID=...
 CLIENT_SECRET=...
 TAVILY_API_KEY=tvly-...
 PERPLEXITY_API_KEY=pplx-...
+QDRANT_URL=http://localhost:6333
 ```
 
 ### Run
@@ -171,6 +187,10 @@ uv sync
 
 # Run database migrations
 psql $DB_URL -f migrations/001_create_cortex_schema.sql
+psql $DB_URL -f migrations/002_closed_issue_summaries.sql
+
+# Start Qdrant (for project knowledge)
+docker run -d --name qdrant -p 6333:6333 qdrant/qdrant:latest
 
 # Start server
 uv run server.py
@@ -184,11 +204,12 @@ uv run server.py
 
 ## Future Roadmap
 
-- [ ] Qdrant KB integration for project knowledge
-- [ ] MemoryAgent for explicit knowledge curation
+- [x] Qdrant KB integration for project knowledge
+- [x] ArchivistAgent for explicit knowledge curation
+- [x] Closed issue summarization and learnings
 - [ ] Cross-project pattern recognition
 - [ ] Agent execution metrics and quality scoring
-- [ ] Multi-agent orchestration
+- [ ] Multi-agent orchestration workflows
 
 ---
 
