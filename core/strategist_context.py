@@ -58,6 +58,17 @@ class KBSnippet:
 
 
 @dataclass(frozen=True)
+class ClosedIssueSummary:
+    """Summary of a closed issue for strategic context."""
+    issue_id: str
+    identifier: str
+    title: str
+    resolution_summary: str
+    learnings: List[str]
+    similarity_score: float
+
+
+@dataclass(frozen=True)
 class StrategistAgentContext:
     """
     Rich context for strategic reasoning.
@@ -105,6 +116,9 @@ class StrategistAgentContext:
     
     # ─── Retrieved Knowledge (from Vector DB - future) ───
     kb_snippets: List[KBSnippet] = field(default_factory=list)
+    
+    # ─── Closed Issue Insights (from cortex.closed_issue_summaries) ───
+    closed_issue_insights: List[ClosedIssueSummary] = field(default_factory=list)
     
     # ─── Execution Metadata ───
     user_id: str = ""

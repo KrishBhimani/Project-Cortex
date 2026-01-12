@@ -23,6 +23,7 @@ from core.strategist_context import (
     StrategyOutput,
     RelatedIssue,
     KBSnippet,
+    ClosedIssueSummary,
 )
 
 
@@ -287,6 +288,66 @@ class ContextAssembler:
         
         return await asyncio.to_thread(_fetch)
     
+    async def fetch_closed_issue_insights(
+        self,
+        project_id: str,
+        embedding,  # Can be list or string from DB
+        limit: int = 3
+    ) -> List[ClosedIssueSummary]:
+        """
+        Fetch similar closed issue summaries from the same project using pgvector.
+        
+        Uses cosine distance for similarity scoring against closed_issue_summaries table.
+        """
+        if not embedding or not project_id:
+            return []
+        
+        def _fetch():
+            self._ensure_connection()
+            cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            
+            # Handle embedding format
+            if isinstance(embedding, str):
+                embedding_str = embedding
+            elif isinstance(embedding, (list, tuple)):
+                embedding_str = f"[{','.join(map(str, embedding))}]"
+            else:
+                print(f"Unknown embedding type: {type(embedding)}")
+                return []
+            
+            # Check if table exists first
+            try:
+                query = """
+                SELECT issue_id, identifier, title, resolution_summary, learnings,
+                       1 - (summary_embedding <=> %s::vector) as similarity
+                FROM cortex.closed_issue_summaries
+                WHERE project_id = %s
+                  AND summary_embedding IS NOT NULL
+                ORDER BY summary_embedding <=> %s::vector
+                LIMIT %s
+                """
+                cur.execute(query, (embedding_str, project_id, embedding_str, limit))
+                results = cur.fetchall()
+                cur.close()
+                
+                return [
+                    ClosedIssueSummary(
+                        issue_id=str(r['issue_id']),
+                        identifier=r['identifier'],
+                        title=r['title'],
+                        resolution_summary=r['resolution_summary'] or '',
+                        learnings=r['learnings'] or [],
+                        similarity_score=float(r['similarity']) if r['similarity'] else 0.0
+                    )
+                    for r in results
+                ]
+            except Exception as e:
+                print(f"Error fetching closed issue insights: {e}")
+                cur.close()
+                return []
+        
+        return await asyncio.to_thread(_fetch)
+    
     async def assemble_strategist_context(
         self,
         issue_id: str,
@@ -331,10 +392,19 @@ class ContextAssembler:
                     limit=5
                 )
             
-            # 5. KB snippets (future - placeholder)
+            # 5. KB snippets - handled by Strategist's native Agno Knowledge integration
             kb_snippets = []
             
-            # 6. Assemble the context
+            # 6. Fetch closed issue insights (if we have embedding)
+            closed_issue_insights = []
+            if issue.get('title_desc_embedding') and issue.get('project_id'):
+                closed_issue_insights = await self.fetch_closed_issue_insights(
+                    project_id=str(issue['project_id']),
+                    embedding=issue['title_desc_embedding'],
+                    limit=3
+                )
+            
+            # 7. Assemble the context
             context = StrategistAgentContext(
                 agent_name="Strategist",
                 run_id=run_id,
@@ -369,6 +439,9 @@ class ContextAssembler:
                 # KB (future)
                 kb_snippets=kb_snippets,
                 
+                # Closed issue insights
+                closed_issue_insights=closed_issue_insights,
+                
                 # Metadata
                 user_id=user_id,
                 access_token=access_token,
@@ -399,6 +472,7 @@ class ContextAssembler:
         Save agent execution record to cortex.agent_executions.
         
         Returns the execution ID.
+        Note: Token/cost tracking handled by Langfuse.
         """
         def _save():
             self._ensure_connection()

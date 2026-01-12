@@ -15,5 +15,6 @@ from agents.registry import AgentRegistry
 from agents import researcher
 from agents import strategist
 from agents import perplexity
+from agents import archivist
 
 __all__ = ["BaseAgent", "AgentResult", "AgentRegistry"]

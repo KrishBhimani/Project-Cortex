@@ -265,7 +265,7 @@ async def callback(code: str = None, state: str = None):
     # Prepare form data
     data = {
         'code': code,
-        'redirect_uri': 'https://a5f085fdd823.ngrok-free.app/callback',
+        'redirect_uri': 'https://7ca0b3688349.ngrok-free.app/callback',
         'client_id': client_id,
         'client_secret': client_secret,
         'grant_type': 'authorization_code'
@@ -564,6 +564,13 @@ async def process_webhook_background(
                         print(f"  - Prior research: {len(rich_context.prior_research)}")
                         print(f"  - Prior strategies: {len(rich_context.prior_strategies)}")
                         print(f"  - Related issues: {len(rich_context.related_issues)}")
+                        print(f"  - Closed issue insights: {len(rich_context.closed_issue_insights)}")
+                        
+                        # Log closed issue insights details if present
+                        if rich_context.closed_issue_insights:
+                            print("  === CLOSED ISSUE INSIGHTS FOUND ===")
+                            for insight in rich_context.closed_issue_insights[:3]:
+                                print(f"    - {insight.identifier}: {insight.title[:50]}... (similarity: {insight.similarity_score:.2f})")
                         
                         context_to_use = rich_context
                         
@@ -872,6 +879,24 @@ async def sync_webhook(request: Request):
                 created_at=created_at,
                 updated_at=updated_at,
             )
+            
+            # === ARCHIVIST: Detect closed issues and trigger summarization ===
+            issue_state = issue_data.get('state', {}).get('name', '').lower() if issue_data.get('state') else ''
+            if action == 'update' and issue_state in ['done', 'completed', 'closed']:
+                print(f"=== ISSUE CLOSED: {issue_data.get('identifier')} - Triggering Archivist ===")
+                try:
+                    from agents.archivist import trigger_archivist_for_closed_issue
+                    asyncio.create_task(trigger_archivist_for_closed_issue(
+                        issue_id=issue_id,
+                        identifier=issue_data.get('identifier', ''),
+                        title=issue_data.get('title', ''),
+                        description=issue_data.get('description'),
+                        project_id=project_id,
+                        labels=labels,
+                    ))
+                    print(f"Archivist summarization task created for {issue_data.get('identifier')}")
+                except Exception as archivist_error:
+                    print(f"Failed to trigger Archivist: {archivist_error}")
             
             return {
                 'message': f'Issue {action} synced',

@@ -21,6 +21,8 @@ from core.strategist_context import StrategistAgentContext
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.db.sqlite import SqliteDb
+from agno.knowledge.knowledge import Knowledge
+from agno.vectordb.qdrant import Qdrant
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -142,18 +144,26 @@ class StrategistAgent(BaseAgent):
         print(f"StrategistAgent: Memory enabled with SQLite (project: {project_id or 'default'})")
         return db
     
-    def _create_agent(self, db: SqliteDb) -> Agent:
-        """Create the Agno agent with the given database."""
-        return Agent(
-            name="Strategist",
-            model=OpenAIChat(id="gpt-4.1-nano"),  # Using stronger model for strategy
-            instructions=STRATEGIST_INSTRUCTIONS,
-            db=db,
-            read_chat_history=True,
-            add_history_to_context=True,
-            markdown=False,  # We want JSON output
-            num_history_runs=3
-        )
+    def _create_agent(self, db: SqliteDb, knowledge=None) -> Agent:
+        """Create the Agno agent with the given database and optional knowledge base."""
+        agent_config = {
+            "name": "Strategist",
+            "model": OpenAIChat(id="gpt-4.1-nano"),  # Using stronger model for strategy
+            "instructions": STRATEGIST_INSTRUCTIONS,
+            "db": db,
+            "read_chat_history": True,
+            "add_history_to_context": True,
+            "markdown": False,  # We want JSON output
+            "num_history_runs": 3,
+        }
+        
+        # Add knowledge base if provided (project Qdrant collection)
+        if knowledge:
+            agent_config["knowledge"] = knowledge
+            agent_config["search_knowledge"] = True
+            print(f"StrategistAgent: Knowledge base attached")
+        
+        return Agent(**agent_config)
     
     def _build_prompt(self, context) -> str:
         """
@@ -216,6 +226,16 @@ class StrategistAgent(BaseAgent):
             parts.append("\n### Project Knowledge:")
             for snippet in context.kb_snippets[:3]:
                 parts.append(f"- {snippet.content[:200]}...")
+        
+        # Rich context only: Closed issue insights
+        if is_rich_context and hasattr(context, 'closed_issue_insights') and context.closed_issue_insights:
+            parts.append("\n### Learnings from Similar Closed Issues:")
+            for insight in context.closed_issue_insights[:3]:
+                parts.append(f"- **{insight.identifier}**: {insight.title}")
+                if insight.resolution_summary:
+                    parts.append(f"  Resolution: {insight.resolution_summary[:200]}...")
+                if insight.learnings:
+                    parts.append(f"  Learnings: {', '.join(insight.learnings[:3])}")
         
         parts.append("\n---")
         parts.append("\nAnalyze the above and produce a strategic plan as JSON.")
@@ -331,7 +351,34 @@ class StrategistAgent(BaseAgent):
             # Build project-scoped database and agent at runtime
             project_id = getattr(context, 'project_id', None)
             self.db = self._build_db(project_id)
-            self.agent = self._create_agent(self.db)
+            
+            # Build project knowledge base from Qdrant (if project exists)
+            knowledge = None
+            if project_id:
+                try:
+                    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+                    collection_name = f"project_{project_id.replace('-', '_').lower()}"
+                    
+                    vector_db = Qdrant(
+                        collection=collection_name,
+                        url=qdrant_url,
+                    )
+                    contents_db = SqliteDb(
+                                db_file="data/cortex_memory.db",
+                                knowledge_table=f"knowledge_contents_{collection_name}"
+                            )
+                    
+                    knowledge = Knowledge(
+                        name=f"Project {project_id} Knowledge",
+                        description=f"Knowledge base for project {project_id}",
+                        vector_db=vector_db,
+                        contents_db=contents_db,
+                    )
+                    print(f"StrategistAgent: Qdrant KB initialized (collection: {collection_name})")
+                except Exception as kb_error:
+                    print(f"StrategistAgent: KB initialization failed (will proceed without KB): {kb_error}")
+            
+            self.agent = self._create_agent(self.db, knowledge=knowledge)
             
             # Build prompt
             prompt = self._build_prompt(context)
